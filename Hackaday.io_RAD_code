@@ -1,0 +1,946 @@
+#Code used to program the RAD device to collect rodent motion data with PIR sensor 
+#This code was utilized as per Lex Kravitz (2018) and Hackaday.io instruction
+
+#Set Clock: 
+
+Setup code
+********************************************************/
+#include <Adafruit_SSD1306.h>
+#include <Wire.h>
+#include <RTCZero.h>
+#include <SPI.h>
+#include <Adafruit_GFX.h>
+#include <TimeLib.h> //include the Arduino Time library
+#define OLED_RESET 4
+Adafruit_SSD1306 display(OLED_RESET);
+
+// initialize variables (these will be overwritten so doesn't really matter what they are)
+byte months = 1;
+byte days = 1;
+byte years = 1;
+byte hours = 1;
+byte minutes = 1;
+byte seconds = 1;
+
+char s_month[5];
+int tmonth, tday, tyear, thour, tminute, tsecond;
+static const char month_names[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
+
+RTCZero rtc;
+
+void setup() {
+  /********************************************************
+       These commands set the time to the current computer time - unfortunately the device needs to be reflashed to update the time
+     ********************************************************/
+  rtc.begin(); // initialize RTC
+
+  // __DATE__ is a C++ preprocessor string with the current date in it.
+  // It will look something like 'Mar  13  2016'.
+  // So we need to pull those values out and convert the month string to a number.
+  sscanf(__DATE__, "%s %d %d", s_month, &tday, &tyear);
+
+  // Similarly, __TIME__ will look something like '09:34:17' so get those numbers.
+  sscanf(__TIME__, "%d:%d:%d", &thour, &tminute, &tsecond);
+
+  // Find the position of this month's string inside month_names, do a little
+  // pointer subtraction arithmetic to get the offset, and divide the
+  // result by 3 since the month names are 3 chars long.
+  tmonth = (strstr(month_names, s_month) - month_names) / 3;
+
+  months = tmonth + 1;  // The RTC library expects months to be 1 - 12.
+  days = tday;
+  years = tyear - 2000; // The RTC library expects years to be from 2000.
+  hours = thour;
+  minutes = tminute;
+  seconds = tsecond;
+
+  rtc.setTime(hours, minutes, seconds);
+  rtc.setDate(days, months, years);
+
+
+  /********************************************************
+       Start, clear, and setup the display
+     ********************************************************/
+  display.begin(SSD1306_SWITCHCAPVCC, 0x3C);  // initialize with the I2C addr 0x3C (for the 128x32)
+  display.ssd1306_command(SSD1306_SETCONTRAST);
+  display.ssd1306_command(0); // Where c is a value from 0 to 255 (sets contrast e.g. brightness)
+
+  display.clearDisplay();
+  display.display();
+  display.setRotation(4);
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+}
+
+/********************************************************
+  Main loop
+********************************************************/
+void loop() {
+  display.setCursor(5, 0);
+  display.print ("RTC has been set to:");
+
+  display.fillRoundRect (00, 10, 132, 12, 1, BLACK);
+
+  display.setCursor(5, 12);
+  display.print(rtc.getMonth());
+  display.print("/");
+  display.print(rtc.getDay());
+  display.print("/");
+  display.print(rtc.getYear() + 2000);
+  display.print(" ");
+  display.print(rtc.getHours());
+  display.print(":");
+  if (rtc.getMinutes() < 10)
+    display.print('0');      // Trick to add leading zero for formatting
+  display.print(rtc.getMinutes());
+  display.print(":");
+  if (rtc.getSeconds() < 10)
+    display.print('0');      // Trick to add leading zero for formatting
+  display.print(rtc.getSeconds());
+
+  display.setCursor(5, 25);
+  display.print ("Reflash device code");
+  //display.clearDisplay();
+  display.display();
+
+
+
+#PIR: 
+Setup code
+  This setup code adds libraries and other setup variables contained
+  in "a_header.h". Do not alter these lines here.
+********************************************************/
+#include "a_Header.h" //See "a_header.h" for #defines and other constants 
+
+void setup() {
+  StartUpCommands();
+}
+
+/********************************************************
+  Main loop
+  This is the main loop of the code. You can edit the functions:
+  UpdateDisplay(): to alter what is displayed on the screen
+  CheckPIR(): to alter how the device checks for motion
+  LogData(): to alter what is written to the SD card
+********************************************************/
+void loop() {
+  UpdateDisplay();
+  CheckPIR();
+  LogData();
+}
+
+  delay (1000);
+}
+
+
+
+
+#Check PIR: 
+ Check PIR output
+  This function checks for motion, and increments a variable "PIRDuration" to reflect 
+  the total time of motion, as well as "PIRCount" to reflect the total number of motion
+  "bouts" detected.  A "bout" is initiated whenever motion is detected, and is ended
+  when motion is absent for 0.6s.
+
+  This function performs two additional tasks.  It checks the battery level, and also
+  allows monitors the "C", button, which displays elapsed time when pushed.
+********************************************************/
+void  CheckPIR() {
+  ReadBatteryLevel();  //Read battery level
+
+  // Monitor PIR
+  while (digitalRead (PIR_PIN) == HIGH) {  // if PIR active
+    PIRDuration += PIRcalibration;  //calibrated with stopwatch, it was more accurate than using millis() to time this
+    PIRDurationChange += PIRcalibration;
+    PIRActive = true;
+  }
+
+  for (int i = 0; i <= PIRBoutDuration; i++) { // If PIR is low for 0.6s count it as the end of a locomotion bout
+    delay (1);
+    if (digitalRead (PIR_PIN) == HIGH) {
+      i = 0;
+      break;
+    }
+    if (PIRActive == true & i == PIRBoutDuration) {
+      PIRCount++;
+      PIRCountChange++;
+      PIRActive = false;
+    }
+  }
+
+  // Show time elapsed when C is pressed
+  calcTimeElapsed();
+  while (digitalRead (buttonC) == LOW) {
+    DisplayTimeElapsed();
+  }
+}
+
+
+
+
+#Display Functions: 
+/********************************************************
+  Update PIR Duration and Counts on OLED display
+  These functions alter what is on the OLED display. They can be edited without
+  altering the data that is recorded on the SD card.  
+********************************************************/
+void UpdateDisplay() {
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+
+  //display PIR activity
+  display.setCursor(20, 0);
+  display.println("Activity");
+  display.setCursor(21, 0);
+  display.println("Activity");
+
+  display.setCursor(20, 13);
+  if (PIRDuration < 1000) { // if it goes beyond 1000 seconds, drop the decimal place on the display (this precision will still be captured on the SD card)
+    display.print(PIRDuration, 1);
+  }
+  else {
+    display.print(PIRDuration, 0);
+  }
+
+  display.print("s");
+
+  display.setCursor(20, 23);
+  display.print("#:");
+  display.println(PIRCount);
+
+  display.drawFastHLine(97, 1, 1, WHITE);
+  display.drawFastHLine(97, 8, 1, WHITE);
+  display.drawFastHLine(97, 15, 1, WHITE);
+  display.drawFastHLine(97, 22, 1, WHITE);
+  display.drawFastHLine(97, 29, 1, WHITE);
+
+  //display device #
+  display.setCursor(105, 0);
+  display.print("PIR");
+  display.setCursor(105, 10);
+  display.print(PIR);
+  
+  //Display battery graphic
+  BatteryGraphic ();
+  display.display();
+}
+/********************************************************
+  Display SD Card error
+  If there is an error with the SD card, or if it is not present, 
+  this will display a warning on the screen
+********************************************************/
+void DisplaySDError() {
+  Blink (RED_LED, 50, 3);
+  delay (25);
+  Blink (GREEN_LED, 50, 3);
+  delay (25);
+  display.begin(SSD1306_SWITCHCAPVCC, 0x3C);  // initialize with the I2C addr 0x3C (for the 128x32)
+  display.clearDisplay();
+  display.display();
+  display.setRotation(4);
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+  display.setCursor(0, 0);
+  display.println("Check SD card!");
+  display.display();
+}
+
+/********************************************************
+   HELPER FUNCTION FOR BLINKING ONBOARD LEDS ON FEATHER
+ ********************************************************/
+void Blink(byte PIN, byte DELAY_MS, byte loops) {
+  for (byte i = 0; i < loops; i++)  {
+    digitalWrite(PIN, HIGH);
+    delay(DELAY_MS);
+    digitalWrite(PIN, LOW);
+    delay(DELAY_MS);
+  }
+}
+
+
+/********************************************************
+   Battery graphic indicating voltage levels
+   This function controls the battery graphic on the screen
+********************************************************/
+void BatteryGraphic () {
+  display.drawRoundRect (105, 24, 16, 8, 1, WHITE);
+  display.drawRoundRect (120, 26, 3, 4, 0, WHITE);
+  display.drawRoundRect (119, 27, 3, 2, 0, BLACK);
+
+  display.drawFastHLine(10, 96, 1, WHITE);
+  display.drawFastHLine(15, 96, 1, WHITE);
+  display.drawFastHLine(20, 96, 1, WHITE);
+
+
+  if (measuredvbat > 3.9) {
+    display.fillRoundRect (107, 26, 12, 4, 0, WHITE);
+  }
+
+  else if (measuredvbat > 3.75) {
+    display.fillRoundRect (107, 26, 9, 4, 0, WHITE);
+  }
+
+  else if (measuredvbat > 3.55) {
+    display.fillRoundRect (107, 26, 6, 4, 0, WHITE);
+  }
+
+  // if voltage is less than 3.55 volts, it's about to die so blink a rectangle on the bottom part
+  else {
+    if (millis() - BlinkMillis >= 800) {
+      display.fillRoundRect (107, 26, 3, 4, 0, WHITE);
+      BlinkMillis = millis();
+    }
+  }
+}
+
+/********************************************************
+      Screen showing total time elapsed
+      When Button "C" is held, it will call this function, which
+      will display elapsed time on the screen.
+********************************************************/
+void DisplayTimeElapsed() {
+  calcTimeElapsed();
+  sprintf(buf, "%02d:%02d:%02d", runHours, runMinutes, runSeconds);
+  display.clearDisplay();
+  display.setCursor(15, 0);
+  display.println("Time since start");
+  display.setCursor(40, 10);
+  display.println(buf);
+  display.setCursor(0, 20);
+  display.print(filename);
+  display.print (".CSV");
+  display.display();
+  delay(200);
+}
+
+
+/********************************************************
+     Start screen
+     This function will control the Startup screen
+********************************************************/
+void DisplayStartScreen() {
+  display.setCursor(5, 0);
+  if (rtc.getMonth() < 10)
+    display.print('0');   // Trick to add leading zero for formatting
+  display.print(rtc.getMonth());
+  display.print("/");
+  if (rtc.getDay() < 10)
+    display.print('0');      // Trick to add leading zero for formatting
+  display.print(rtc.getDay());
+  display.print("/");
+  display.print(rtc.getYear() + 2000);
+  display.print("  ");
+  if (rtc.getHours() < 10)
+    display.print('0');      // Trick to add leading zero for formatting
+  display.print(rtc.getHours());
+  display.print(":");
+  if (rtc.getMinutes() < 10)
+    display.print('0');      // Trick to add leading zero for formatting
+  display.print(rtc.getMinutes());
+  display.print(":");
+  if (rtc.getSeconds() < 10)
+    display.print('0');      // Trick to add leading zero for formatting
+  display.print(rtc.getSeconds());
+
+  display.setCursor(5, 12);
+  display.print ("  Press A to start");
+
+  display.setCursor(5, 25);
+  display.println(filename);
+  display.display();
+}
+
+
+
+
+#Log Data: 
+/********************************************************
+  These functions control the data that is logged on the SD card.
+  Editing these functions can alter how files are named and what is recorded in them.  
+********************************************************/
+
+void LogData() {
+  logtimerfunction ();  // Is it time to log data? (Edit variable "logfreq" in a_header to change this timing)
+  
+  if (logReady == true) {
+    Blink(RED_LED, 50, 3);  //blink while logging
+    WriteToSD();
+    logReady = false;
+    logtimer = elapsed;
+    logfile.flush();
+  }
+}
+
+// Create new file on uSD incrementing file name as required
+void CreateFile() {
+  //put this next line *Right Before* any file open line:
+  SdFile::dateTimeCallback(dateTime);
+
+  // see if the card is present and can be initialized:
+  if (!SD.begin(cardSelect)) {
+    error(2);
+  }
+
+  configfile = SD.open("DeviceNumber.csv", FILE_WRITE);
+
+  // grab device name from DeviceNumber.csv
+  configfile = SD.open("DeviceNumber.csv", FILE_READ);
+  PIR = configfile.parseInt();
+  configfile.close();
+
+  // Name filename in format F###_MMDDYYNN, where MM is month, DD is day, YY is year, and NN is an incrementing number for the number of files initialized each day
+  strcpy(filename, "PIR_____________.CSV");  // placeholder filename
+  getFilename(filename);
+
+  logfile = SD.open(filename, FILE_WRITE);
+
+  if ( ! logfile ) {
+    error(3);
+  }
+}
+
+// Write data header to file of uSD.
+void writeHeader() {
+  logfile.println("MM:DD:YYYY hh:mm:ss, Elapsed Time, Device, BatteryVoltage, PIRCount, PIRDuration, PIRCountChange, PIRDurationChange,");
+}
+
+void writeConfigFile() {
+  configfile = SD.open("DeviceNumber.csv", FILE_WRITE);
+  configfile.rewind();
+  configfile.println(PIR);
+  configfile.close();
+}
+
+// Write data to SD
+void WriteToSD() {
+   Blink (RED_LED, 25, 2);
+  
+  logfile.print(rtc.getMonth());
+  logfile.print("/");
+  logfile.print(rtc.getDay());
+  logfile.print("/");
+  logfile.print(rtc.getYear() + 2000);
+  logfile.print(" ");
+  logfile.print(rtc.getHours());
+  logfile.print(":");
+  if (rtc.getMinutes() < 10)
+    logfile.print('0');      // Trick to add leading zero for formatting
+  logfile.print(rtc.getMinutes());
+  logfile.print(":");
+  if (rtc.getSeconds() < 10)
+    logfile.print('0');      // Trick to add leading zero for formatting
+  logfile.print(rtc.getSeconds());
+  logfile.print(",");
+  logfile.print(runHours); //elapsed time
+  logfile.print(":");
+  logfile.print(runMinutes); //elapsed time
+  logfile.print(":");
+  logfile.print(runSeconds); //elapsed time
+  logfile.print(",");
+  logfile.print(PIR); // Print device name
+  logfile.print(",");
+  logfile.print(measuredvbat);
+  logfile.print(",");
+  logfile.print(PIRCount);
+  logfile.print(",");
+  logfile.print(PIRDuration);
+  logfile.print(",");
+  logfile.print(PIRCountChange);
+  PIRCountChange = 0;
+  logfile.print(",");
+  logfile.print(PIRDurationChange);
+  logfile.println(",");
+  PIRDurationChange = 0.0;
+}
+
+void error(uint8_t errno) {
+  while (1) {
+    uint8_t i;
+    for (i = 0; i < errno; i++) {
+      DisplaySDError();
+    }
+  }
+}
+
+void getFilename(char *filename) {
+  filename[3] = (PIR / 100) % 10 + '0';
+  filename[4] = (PIR / 10) % 10 + '0';
+  filename[5] = PIR % 10 + '0';
+  filename[7] = rtc.getMonth() / 10 + '0';
+  filename[8] = rtc.getMonth() % 10 + '0';
+  filename[9] = rtc.getDay() / 10 + '0';
+  filename[10] = rtc.getDay() % 10 + '0';
+  filename[11] = rtc.getYear() / 10 + '0';
+  filename[12] = rtc.getYear() % 10 + '0';
+  filename[16] = '.';
+  filename[17] = 'C';
+  filename[18] = 'S';
+  filename[19] = 'V';
+  for (uint8_t i = 0; i < 100; i++) {
+    filename[14] = '0' + i / 10;
+    filename[15] = '0' + i % 10;
+    // create if does not exist, do not open existing, write, sync after write
+    if (! SD.exists(filename)) {
+      break;
+    }
+  }
+  return;
+}
+
+void logtimerfunction() {
+  if (elapsed - logtimer >= logfreq) {
+    logReady = true;
+  }
+}
+
+void calcTimeElapsed() {
+  elapsed = ((millis() - startmillis) / 1000);
+  runHours = elapsed / 3600;
+  secsRemaining = elapsed % 3600;
+  runMinutes = secsRemaining / 60;
+  runSeconds = secsRemaining % 60;
+}
+
+
+
+
+
+#Read Battery: 
+/********************************************************
+  This function will read the battery level, using the internal battery voltage
+  checking function on pin A7 of the Adalogger
+********************************************************/
+
+void ReadBatteryLevel() {
+  measuredvbat = analogRead(VBATPIN);
+  measuredvbat *= 2;    // we divided by 2, so multiply back
+  measuredvbat *= 3.3;  // Multiply by 3.3V, our reference voltage
+  measuredvbat /= 1024; // convert to voltage
+}
+
+
+
+
+#Set Clock Variable: 
+/********************************************************
+  When the device starts up, the user has the opportunity to set the data, time, and device #
+  from the start screen.  This ability is controlled by this function.
+********************************************************/
+
+void SetClockVars() {
+  //Display all current data
+  display.clearDisplay();
+  display.setCursor(5, 0);
+  display.print (" ");
+  display.display();
+  delay (100);
+  display.setCursor(5, 0);
+  if (rtc.getMonth() < 10)
+    display.print('0');      // Trick to add leading zero for formatting
+  display.print(rtc.getMonth());
+  display.print("/");
+  if (rtc.getDay() < 10)
+    display.print('0');      // Trick to add leading zero for formatting
+  display.print(rtc.getDay());
+  display.print("/");
+  display.print(rtc.getYear() + 2000);
+  display.print("  ");
+  if (rtc.getHours() < 10)
+    display.print('0');      // Trick to add leading zero for formatting
+  display.print(rtc.getHours());
+  display.print(":");
+  if (rtc.getMinutes() < 10)
+    display.print('0');      // Trick to add leading zero for formatting
+  display.print(rtc.getMinutes());
+  display.print(":");
+  if (rtc.getSeconds() < 10)
+    display.print('0');      // Trick to add leading zero for formatting
+  display.println(rtc.getSeconds());
+
+  display.setCursor(5, 12);
+  display.print ("    Set Variables");
+
+  display.setCursor(5, 25);
+  display.println(filename);
+  display.display();
+
+  //Adjust months
+  while (SetSequence == 1) {
+    display.fillRoundRect (4, 0, 12, 9, 0, BLACK);
+    display.display();
+    delay (100);
+    display.setCursor(5, 0);
+    if (rtc.getMonth() < 10) {
+      display.print(0);
+    }
+    display.print(rtc.getMonth());
+    display.display();
+    delay (100);
+    if (digitalRead(buttonA) == LOW) {
+      rtc.setMonth(rtc.getMonth() + 1);
+    }
+    if (digitalRead(buttonC) == LOW) {
+      rtc.setMonth(rtc.getMonth() - 1);
+    }
+    if (digitalRead(buttonB) == LOW) {
+      SetSequence = 2;
+    }
+  }
+
+  //Adjust days
+  while (SetSequence == 2) {
+    display.fillRoundRect (22, 0, 12, 9, 0, BLACK);
+    display.display();
+    delay (100);
+    display.setCursor(23, 0);
+    if (rtc.getDay() < 10) {
+      display.print(0);
+    }
+    display.print(rtc.getDay());
+    display.display();
+    delay (100);
+    if (digitalRead(buttonA) == LOW) {
+      rtc.setDay(rtc.getDay() + 1);
+    }
+    if (digitalRead(buttonC) == LOW) {
+      rtc.setDay(rtc.getDay() - 1);
+    }
+    if (digitalRead(buttonB) == LOW) {
+      SetSequence = 3;
+    }
+  }
+
+  //Adjust year
+  while (SetSequence == 3) {
+    display.fillRoundRect (40, 0, 30, 9, 0, BLACK);
+    display.display();
+    delay (100);
+    display.setCursor(41, 0);
+    display.print(rtc.getYear() + 2000);
+    display.display();
+    delay (100);
+    if (digitalRead(buttonA) == LOW) {
+      rtc.setYear(rtc.getYear() + 1);
+    }
+    if (digitalRead(buttonC) == LOW) {
+      rtc.setYear(rtc.getYear() - 1);
+    }
+    if (digitalRead(buttonB) == LOW) {
+      SetSequence = 4;
+    }
+  }
+
+  //Adjust hours
+  while (SetSequence == 4) {
+    display.fillRoundRect (77, 0, 12, 9, 0, BLACK);
+    display.display();
+    delay (100);
+    display.setCursor(78, 0);
+    if (rtc.getHours() < 10) {
+      display.print(0);
+    }
+    display.print(rtc.getHours());
+    display.display();
+    delay (100);
+    if (digitalRead(buttonA) == LOW) {
+      rtc.setHours(rtc.getHours() + 1);
+      if (rtc.getHours () > 24) {
+        rtc.setHours (0);
+      }
+    }
+    if (digitalRead(buttonC) == LOW) {
+      rtc.setHours(rtc.getHours() - 1);
+      if (rtc.getHours () < 1) {
+        rtc.setHours (24);
+      }
+    }
+    if (digitalRead(buttonB) == LOW) {
+      SetSequence = 5;
+    }
+  }
+
+  //Adjust minutes
+  while (SetSequence == 5) {
+    display.fillRoundRect (95, 0, 12, 9, 0, BLACK);
+    display.display();
+    delay (100);
+    display.setCursor(96, 0);
+    if (rtc.getMinutes() < 10) {
+      display.print(0);
+    }
+    display.print(rtc.getMinutes());
+    display.display();
+    delay (100);
+    if (digitalRead(buttonA) == LOW) {
+      rtc.setMinutes(rtc.getMinutes() + 1);
+      if (rtc.getMinutes () > 59) {
+        rtc.setMinutes (0);
+      }
+    }
+    if (digitalRead(buttonC) == LOW) {
+      rtc.setMinutes(rtc.getMinutes() - 1);
+      if (rtc.getMinutes () < 0) {
+        rtc.setMinutes (59);
+      }
+    }
+    if (digitalRead(buttonB) == LOW) {
+      SetSequence = 6;
+    }
+  }
+
+  //Adjust Seconds
+  while (SetSequence == 6) {
+    display.fillRoundRect (113, 0, 12, 9, 0, BLACK);
+    display.display();
+    delay (100);
+    display.setCursor(114, 0);
+    if (rtc.getSeconds() < 10) {
+      display.print(0);
+    }
+    display.print(rtc.getSeconds());
+    display.display();
+    delay (100);
+    if (digitalRead(buttonA) == LOW) {
+      rtc.setSeconds(rtc.getSeconds() + 1);
+    }
+    if (digitalRead(buttonC) == LOW) {
+      rtc.setSeconds(rtc.getSeconds() - 1);
+    }
+    if (digitalRead(buttonB) == LOW) {
+      SetSequence = 7;
+    }
+  }
+
+  while (SetSequence == 7) {
+    display.fillRoundRect (22, 25, 18, 9, 0, BLACK);
+    display.display();
+    delay (100);
+
+    display.setCursor(23, 25);
+    if (PIR < 100 & PIR >= 10) {
+      display.print ("0");
+    }
+    if (PIR < 10) {
+      display.print ("00");
+    }
+    display.print (PIR);
+    display.display();
+    delay (100);
+    if (digitalRead(buttonA) == LOW) {
+      PIR += 1;
+    }
+    if (digitalRead(buttonC) == LOW) {
+      PIR -= 1;;
+      if (PIR < 1) {
+        PIR = 0;
+      }
+      if (PIR > 700) {
+        PIR = 700;
+      }
+    }
+    if (digitalRead(buttonB) == LOW) {
+      display.clearDisplay();
+      display.setCursor(5, 12);
+      display.print ("    Variables Set!");
+      display.display();
+      delay (500);
+      writeConfigFile();
+      CreateFile();
+      writeHeader();
+      SetSequence = 0;
+    }
+  }
+}
+
+
+
+
+#Set Up Commands: 
+/********************************************************
+  Start Up Commands
+  These commands are required for setting up the Adalogger and associated
+  hardware.  They should not be altered.
+********************************************************/
+void StartUpCommands () {
+  Serial.begin(115200);
+
+  /********************************************************
+    These commands are associated with the low power sleep states
+  ********************************************************/
+  SYSCTRL->VREG.bit.RUNSTDBY = 1;
+  SYSCTRL->DFLLCTRL.bit.RUNSTDBY = 1;
+  USBDevice.detach();
+  for (byte i = 0; i <= 20; i++) {
+    pinMode(i, INPUT_PULLUP);
+  }
+
+  /********************************************************
+     Start RTC
+   ********************************************************/
+  rtc.begin(); // initialize RTC
+
+  /********************************************************
+    Setting digital pin modes
+  ********************************************************/
+  pinMode(PIR, INPUT);
+  pinMode (RED_LED, OUTPUT);
+  pinMode (GREEN_LED, OUTPUT);
+  pinMode(buttonA, INPUT_PULLUP);
+  pinMode(buttonB, INPUT_PULLUP);
+  pinMode(buttonC, INPUT_PULLUP);
+  pinMode (powerPIR, OUTPUT);
+  
+  digitalWrite(GREEN_LED, LOW);
+  digitalWrite(RED_LED, LOW);
+  digitalWrite(powerPIR, HIGH);
+
+  /********************************************************
+    SD Card setup function
+  ********************************************************/
+  CreateFile();
+  writeHeader();
+
+  /********************************************************
+    Start, clear, and setup the display
+  ********************************************************/
+  display.begin(SSD1306_SWITCHCAPVCC, 0x3C);  // initialize with the I2C addr 0x3C (for the 128x32)
+  display.ssd1306_command(SSD1306_SETCONTRAST);
+  display.ssd1306_command(0); // Where c is a value from 0 to 255 (sets contrast e.g. brightness)
+
+  display.setRotation(4);
+  display.setTextSize(1);
+  display.setTextColor(WHITE);
+
+  /********************************************************
+     Display start date time and filename
+    ********************************************************/
+  display.clearDisplay();
+  DisplayStartScreen();
+
+  //delay until button A is pressed to start sipper
+  while (digitalRead(buttonA) == HIGH) {
+    display.clearDisplay();
+    //display.fillRoundRect (00, 0, 132, 21, 1, BLACK);  // Clear part of the screen so StartScreen clock isn't overwritten
+    PIRmillis = millis();
+    startmillis = millis();
+    DisplayStartScreen();
+
+    //Code for starting the sequence to set the clock and sipper #
+    if (digitalRead(buttonB) == LOW) {  //if button B is held
+      delay (500);
+      if (digitalRead(buttonB) == LOW) {
+        SetSequence = 1;
+        SetClockVars();
+        display.clearDisplay(); //after setting variables, return to start screen
+        DisplayStartScreen();
+      }
+    }
+  }
+  Blink (RED_LED, 50, 3);
+}
+
+
+
+
+#Headers: 
+/********************************************************
+  Include these libraries
+  These libraries are required for operation of the device
+  They can be found here:
+  https://hackaday.io/project/160742-homecage-activity-monitoring-with-pirs  
+********************************************************/
+#include <Adafruit_SSD1306.h>
+#include <Wire.h>
+#include <RTCZero.h>
+#include <SPI.h>
+#include <SdFat.h>
+SdFat SD;             //Quick way to make SdFat work with standard SD.h sketches
+#include <Adafruit_GFX.h>
+#include <TimeLib.h> //include the Arduino Time library
+#include <stdio.h>  // include the C++ standard IO library
+
+/********************************************************
+  Set up OLED screen
+  These lines set up and reset the OLED screen
+  These should not be changed.
+********************************************************/
+#define OLED_RESET 4
+Adafruit_SSD1306 display(OLED_RESET);
+
+/********************************************************
+  Feather pins being used
+  These denote the pins used for the LEDs, buttons, SD card, and sensor
+  These should not be changed.
+********************************************************/
+#define RED_LED 13
+#define GREEN_LED 8
+#define PIR_PIN 15
+#define VBATPIN A7
+#define cardSelect 4
+#define buttonA 9
+#define buttonB 6
+#define buttonC 5
+#define powerPIR 1
+
+/********************************************************
+  Initialize variables
+  Most of these variables should not be changed, except for logfreq.
+  logfreq changes the logging frequency, which is in seconds.  
+  by default it is set to 60s 
+  
+  The other variables should not be changed 
+********************************************************/
+int logfreq = 60;  // Change this to edit # of seconds between data points
+
+//DON'T CHANGE VARIABLES BELOW HERE ****************
+int PIRBoutDuration = 600;
+int PIRCount = 0;
+double PIRDuration = 0.0;
+bool PIRActive = false;
+bool logReady = false;
+int logtimer = 0;
+float measuredvbat = 1.00;
+unsigned long BlinkMillis = millis();
+unsigned long PIRmillis = millis();
+unsigned long startmillis = millis();
+char buf[21];
+int SetSequence = 0;
+int PIRCountChange=0;
+double PIRDurationChange=0.0;
+float PIRcalibration=0.0000325;
+
+/********************************************************
+  Setup RTC and filenames on SD card
+  These variables are needed to initialize the filename
+  on the SD card.  These should not be changed.
+********************************************************/
+RTCZero rtc;
+
+void dateTime(uint16_t* date, uint16_t* time) {
+  // return date using FAT_DATE macro to format fields
+  *date = FAT_DATE(rtc.getYear() - 48, rtc.getMonth(), rtc.getDay());
+
+  // return time using FAT_TIME macro to format fields
+  *time = FAT_TIME(rtc.getHours(), rtc.getMinutes(), rtc.getSeconds());
+}
+
+File logfile;         // Create file object
+File configfile;         // Create another file object
+char filename[15];    // Array for file name data logged to named in setup
+int PIR;
+
+/********************************************************
+  Setup date and time variables
+  These variables are needed for proper operation of the RTC 
+  and should not be changed
+********************************************************/
+char s_month[5];
+int tmonth, tday, tyear, thour, tminute, tsecond;
+static const char month_names[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
+unsigned long elapsed = ((millis() - startmillis) / 1000);
+int runHours = elapsed / 3600;
+int secsRemaining = elapsed % 3600;
+int runMinutes = secsRemaining / 60;
+int runSeconds = secsRemaining % 60;
+
