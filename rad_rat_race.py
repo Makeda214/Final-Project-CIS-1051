@@ -66,6 +66,7 @@ def RadRatRace():
     for i, t in enumerate(turtles):
         movement = movements[i]
         print(f"{t.shape()} will move {movement} steps.")
+        t.speed(20)
         t.forward(movement)  # Move the turtle
         distances[t.shape()] = movement  # Store the final movement distance for each turtle
 
